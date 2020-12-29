@@ -398,35 +398,50 @@ class ForkingBase(object):
     '''
     def _child_handler(self, sig, stackframe):
         def notify():
+            self.dprint('_child_handler.notify: acquire')
             self.__child_exited.acquire()
+            self.dprint('_child_handler.notify: notify_all')
             self.__child_exited.notify_all()
+            self.dprint('_child_handler.notify: release')
             self.__child_exited.release()
+            self.dprint('_child_handler.notify: exiting')
         self.log.trace('handler called for signal %s' % sig)
+        self.dprint('_child_handler: called for signal %s' % sig)
         try:
+            self.dprint('_child_handler: os.waitpid')
             pid, r = os.waitpid(self.child.childpid,0)
+            self.dprint('_child_handler: os.waitpid done')
         except OSError as o:
             # No children on SIGCHLD.  Can't happen?
             self.log.warning('handler called, but no children (%s)' % o)
+            self.dprint('_child_handler: handler called, but no children (%s)' % o)
             notify()
             return
+        self.dprint('_child_hander: signal.signal')
         signal.signal(signal.SIGCHLD, self.__orig_handler)
         self.__child_pid = pid
         self.__child_status = r
         self.log.trace('handler reaped child %s with status %s' % (pid, r))
+        self.dprint('_child_handler: reaped child %s with status %s' % (pid, r))
         notify()
 
-    def _prepare_child(self):
+    def _prepare_child(self, pid):
         self.log.trace('')
+        self.dprint('_prepare_child(%d): entered' % pid)
         self.__child_exited = Condition()
         self.__child_pid = 0
         self.__child_status = None
         self.__orig_handler = signal.signal(signal.SIGCHLD, self._child_handler)
+        self.dprint('_prepare_child(%d): exiting' % pid)
 
     def _wait_for_child(self, childpid):
+        self.dprint('_wait_for_child: acquiring __child_exited')
         self.__child_exited.acquire()
         if not self.__child_exited.wait(3):
             self.log.warning('stopped waiting for child %d' % childpid)
+        self.dprint('_wait_for_child: releasing __child_exited')
         self.__child_exited.release()
+        self.dprint('_wait_for_child: released __child_exited')
         if self.__child_pid != childpid:
             #self.log.error('got child pid %d, not %d' % (pid, childpid))
             raise getmailOperationError(
@@ -473,10 +488,14 @@ class ForkingBase(object):
         self.child = child = Namespace()
         child.stdout = TemporaryFile23()
         child.stderr = TemporaryFile23()
+        self.dprint('forkchild: forking')
         child.childpid = os.fork()
         if child.childpid != 0: # here (in the parent)
-            self._prepare_child()
+            self.dprint('forkchild(%d): forked, calling _prepare_child' % child.childpid)
+            self._prepare_child(child.childpid)
             self.log.debug('spawned child %d\n' % child.childpid)
+            self.dprint('forkchild(parent): spawned child %d' % child.childpid)
+            self.dprint('forkchild(parent): calling _wait_for_child')
             child.exitcode = self._wait_for_child(child.childpid)
             child.stderr.seek(0)
             child.err = child.stderr.read().strip().decode()
@@ -485,6 +504,7 @@ class ForkingBase(object):
                 child.out = child.stdout.read().strip()
             return child
         else: #== 0 in the child
+            self.dprint('forkchild(child): calling childfun')
             # calls child_replace_me to execl external command
             childfun(child.stdout, child.stderr)
 
@@ -499,3 +519,7 @@ class ForkingBase(object):
         self.log.debug('msginfo "%s"\n' % msginfo)
         return msginfo
 
+    def dprint(self, msg):
+        print(time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+              + ' %d ' % time.perf_counter_ns()
+              + msg, flush=True)
