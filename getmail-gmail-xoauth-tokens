@@ -28,6 +28,9 @@ import sys
 import json
 import argparse
 import time
+import base64
+import hashlib
+import secrets
 import urllib.request as urllibrequest
 import urllib.parse as urllibparse
 import urllib.error as urlliberror
@@ -36,6 +39,21 @@ urlparse = urllibparse
 def codebytes(b): return b.encode("utf8")
 
 force_local_redirect = True
+
+# PKCE (RFC 7636)
+def generate_code_verifier():
+    """Return a random code_verifier (RFC 7636 section 4.1).
+
+    token_urlsafe(64) yields 86 characters from [A-Za-z0-9_-], which is
+    within the allowed length of 43..128 characters.
+    """
+    return secrets.token_urlsafe(64)
+
+def code_challenge_s256(code_verifier):
+    """Return BASE64URL(SHA256(ASCII(code_verifier))) without padding
+    (RFC 7636 section 4.2)."""
+    digest = hashlib.sha256(code_verifier.encode('ascii')).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b'=').decode('ascii')
 
 def get_code(url):
     urlparsed = urlparse.urlparse(url)
@@ -66,6 +84,8 @@ class OAuth2(object):
 
     def __init__(self, token_data_path):
         self.token_data_path = token_data_path
+        # PKCE: a fresh verifier per authorization attempt
+        self.code_verifier = generate_code_verifier()
 
         with open(self.token_data_path) as f:
             self.data = json.load(f)
@@ -92,6 +112,8 @@ class OAuth2(object):
             params['redirect_uri'] = 'http://localhost:' + str(port) + '/'
         params['response_type'] = 'code'
         params['access_type'] = 'offline'
+        params['code_challenge'] = code_challenge_s256(self.code_verifier)
+        params['code_challenge_method'] = 'S256'
         if 'prompt' in self.data:
             params['prompt'] = self.data['prompt']
         else:
@@ -125,6 +147,7 @@ class OAuth2(object):
             params['redirect_uri'] = 'http://localhost:' + str(port) + '/'
         params['code'] = code
         params['grant_type'] = 'authorization_code'
+        params['code_verifier'] = self.code_verifier
 
         d = self.get_response(self.data['token_uri'], params)
         self.update_config(d)
